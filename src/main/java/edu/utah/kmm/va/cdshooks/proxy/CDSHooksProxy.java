@@ -42,9 +42,9 @@ public class CDSHooksProxy {
 
     private static class BatchRequestEntry {
 
-        private final String hookInstance;
-
         private final String hookId;
+
+        private final String hookInstance;
 
         private RequestState state = RequestState.PENDING;
 
@@ -204,16 +204,13 @@ public class CDSHooksProxy {
     public Response getCdsResponse(
             @PathParam("batchId") String batchId,
             @PathParam("hookInstance") String hookInstance) {
-        BatchRequest batchRequest = batchRequestMap.get(hookInstance);
+        BatchRequest batchRequest = batchRequestMap.get(batchId);
+        String response = batchRequest == null ? null : batchRequest.getCdsResponse(hookInstance);
 
-        if (batchRequest == null) {
+        if (response == null) {
             return Response.status(Response.Status.NOT_FOUND).build();
-        } else if (batchRequest.allComplete()) {
-            batchRequestMap.remove(hookInstance);
-            return Response.noContent().build();
         } else {
-            String response = batchRequest.getNextHookInstance();
-            return Response.ok(response == null ? "" : response).build();
+            return Response.ok(response).build();
         }
     }
 
