@@ -20,9 +20,11 @@ import org.opencds.hooks.model.request.WritableCdsRequest;
 import org.springframework.beans.factory.annotation.Value;
 
 import javax.annotation.PostConstruct;
-import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.*;
-import javax.ws.rs.core.*;
+import javax.ws.rs.core.HttpHeaders;
+import javax.ws.rs.core.MediaType;
+import javax.ws.rs.core.MultivaluedMap;
+import javax.ws.rs.core.Response;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -31,79 +33,119 @@ import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
-import java.util.function.Consumer;
-import java.util.stream.Collectors;
+import java.util.function.BiConsumer;
+import java.util.function.Predicate;
 
 public class CDSHooksProxy {
 
+    private enum RequestState {PENDING, COMPLETED, ERROR, DEQUEUED, HANDLED}
+
+    private static class BatchRequestEntry {
+
+        private final String hookInstance;
+
+        private final String hookId;
+
+        private RequestState state = RequestState.PENDING;
+
+        private String cdsResponse;
+
+        BatchRequestEntry(
+                String hookId,
+                String hookInstance) {
+            this.hookId = hookId;
+            this.hookInstance = hookInstance;
+        }
+
+    }
+
     private static class BatchRequest {
 
-        private final List<String> responses = new ArrayList<>();
+        private final List<BatchRequestEntry> entries = new ArrayList<>();
 
-        private final String id = UUID.randomUUID().toString();
-
-        private int requestCount;
+        private final String requestId = UUID.randomUUID().toString();
 
         private boolean aborted;
 
-        void onComplete(HttpResponse response) {
+        private BatchRequestEntry findEntry(Predicate<BatchRequestEntry> predicate) {
+            return entries.stream().filter(predicate).findFirst().orElse(null);
+        }
+
+        synchronized void onComplete(
+                String hookInstance,
+                HttpResponse response) {
             if (aborted) {
                 return;
             }
 
-            synchronized (responses) {
-                requestCount--;
+            BatchRequestEntry entry = findEntry(e -> e.hookInstance.equals(hookInstance));
 
-                if (response.getStatusLine().getStatusCode() / 100 != 2) {
-                    log.error("Service invocation error: " + response.getStatusLine().getStatusCode());
-                    return;
-                }
-
-                String cdsResponse = getCdsHookResponse(response);
-
-                if (cdsResponse != null) {
-                    responses.add(cdsResponse);
-                }
+            if (entry == null) {
+                return;
             }
-        }
 
-        private String getCdsHookResponse(HttpResponse response) {
+            if (response.getStatusLine().getStatusCode() / 100 != 2) {
+                logError(entry, "Http error code " + response.getStatusLine().getStatusCode());
+                return;
+            }
+
             try {
-                String body = IOUtils.toString(response.getEntity().getContent(), StandardCharsets.UTF_8);
-                log.debug(body);
-                return body;
+                entry.state = RequestState.COMPLETED;
+                entry.cdsResponse = IOUtils.toString(response.getEntity().getContent(), StandardCharsets.UTF_8);
+                log.debug(entry.cdsResponse);
             } catch (Exception e) {
-                log.error(e.getMessage(), e);
-                return null;
+                logError(entry, e.getMessage());
             }
+
         }
 
-        String getNextResponse() {
-            synchronized (responses) {
-                if (requestCount <= 0 || responses.isEmpty()) {
-                    return null;
-                } else {
-                    requestCount--;
-                    return responses.remove(0);
-                }
-            }
+        private void logError(
+                BatchRequestEntry entry,
+                String message) {
+            log.error(String.format("Error executed CDSHook service %s.  The error was: %s", entry.hookId, message));
+            entry.state = RequestState.ERROR;
+            entries.remove(entry);
         }
 
-        void incrementRequestCount() {
-            synchronized (responses) {
-                requestCount++;
+        synchronized String getNextHookInstance() {
+            BatchRequestEntry entry = findEntry(r -> r.state == RequestState.COMPLETED);
+
+            if (entry != null) {
+                entry.state = RequestState.DEQUEUED;
+                return entry.hookInstance;
             }
+
+            return null;
+        }
+
+
+        synchronized String getCdsResponse(String hookInstance) {
+            BatchRequestEntry entry = findEntry(e -> e.hookInstance.equals(hookInstance) && e.state == RequestState.DEQUEUED);
+
+            if (entry != null) {
+                entry.state = RequestState.HANDLED;
+                entries.remove(entry);
+                return entry.cdsResponse;
+            }
+
+            return null;
+        }
+
+        synchronized void addRequest(
+                String hookId,
+                String hookInstance) {
+            entries.add(new BatchRequestEntry(hookId, hookInstance));
         }
 
         boolean allComplete() {
-            return requestCount == 0 && responses.isEmpty();
+            return entries.isEmpty();
         }
 
         void abort() {
             aborted = true;
-            requestCount = 0;
-            responses.clear();
+            entries.clear();
         }
+
     }
 
     private static final Log log = LogFactory.getLog(CDSHooksProxy.class);
@@ -140,26 +182,45 @@ public class CDSHooksProxy {
     }
 
     @GET
-    @Path("/response/{requestId}")
-    @Produces(MediaType.APPLICATION_JSON)
-    public Response getResponse(@PathParam("requestId") String requestId) {
-        BatchRequest batchRequest = batchRequestMap.get(requestId);
+    @Path("/next/{batchId}")
+    @Produces(MediaType.TEXT_PLAIN)
+    public Response getNextHookInstance(@PathParam("batchId") String batchId) {
+        BatchRequest batchRequest = batchRequestMap.get(batchId);
 
         if (batchRequest == null) {
             return Response.status(Response.Status.NOT_FOUND).build();
         } else if (batchRequest.allComplete()) {
-            batchRequestMap.remove(requestId);
+            batchRequestMap.remove(batchId);
             return Response.noContent().build();
         } else {
-            String response = batchRequest.getNextResponse();
+            String response = batchRequest.getNextHookInstance();
             return Response.ok(response == null ? "" : response).build();
         }
     }
 
     @GET
-    @Path("/abort/{requestId}")
-    public Response abortRequest(@PathParam("requestId") String requestId) {
-        BatchRequest batchRequest = batchRequestMap.remove(requestId);
+    @Path("/response/{batchId}/{hookInstance}")
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response getCdsResponse(
+            @PathParam("batchId") String batchId,
+            @PathParam("hookInstance") String hookInstance) {
+        BatchRequest batchRequest = batchRequestMap.get(hookInstance);
+
+        if (batchRequest == null) {
+            return Response.status(Response.Status.NOT_FOUND).build();
+        } else if (batchRequest.allComplete()) {
+            batchRequestMap.remove(hookInstance);
+            return Response.noContent().build();
+        } else {
+            String response = batchRequest.getNextHookInstance();
+            return Response.ok(response == null ? "" : response).build();
+        }
+    }
+
+    @GET
+    @Path("/abort/{batchId}")
+    public Response abortRequest(@PathParam("batchId") String batchId) {
+        BatchRequest batchRequest = batchRequestMap.remove(batchId);
 
         if (batchRequest != null) {
             batchRequest.abort();
@@ -173,19 +234,23 @@ public class CDSHooksProxy {
         String hook = data.getFirst("hook");
         Validate.notNull(hook, "No hook type specified in request.");
         Map<String, String> context = new HashMap<>();
-        copyMap(data, context, "patientId", "userId" );
+        copyMap(data, context, "patientId", "userId");
         getCatalog().getServices("patient-view").forEach(s -> queueService(batch, s, context));
-        return batch.allComplete() ? null : batch.id;
+        return batch.allComplete() ? null : batch.requestId;
     }
 
     private BatchRequest newBatchRequest() {
         synchronized (batchRequestMap) {
             BatchRequest batchRequest = new BatchRequest();
-            batchRequestMap.put(batchRequest.id, batchRequest);
+            batchRequestMap.put(batchRequest.requestId, batchRequest);
             return batchRequest;
         }
     }
-    private void copyMap(MultivaluedMap<String, String> from, Map<String, String> to, String... fields) {
+
+    private void copyMap(
+            MultivaluedMap<String, String> from,
+            Map<String, String> to,
+            String... fields) {
         Arrays.stream(fields).forEach(field -> to.put(field, from.getFirst(field)));
     }
 
@@ -202,7 +267,7 @@ public class CDSHooksProxy {
         request.setHookInstance(UUID.randomUUID().toString());
         request.setFhirServer(fhirEndpointURL);
         request.setFhirVersion(FhirVersion.R4);
-        batch.incrementRequestCount();
+        batch.addRequest(service.getId(), request.getHookInstance());
         threadPoolExecutor.execute(() -> requestExecution(service, request, batch::onComplete));
     }
 
@@ -233,14 +298,17 @@ public class CDSHooksProxy {
         return cdsHooksCatalog;
     }
 
-    private void requestExecution(CDSHooksService service, CdsRequest request, Consumer<HttpResponse> responseHandler) {
+    private void requestExecution(
+            CDSHooksService service,
+            CdsRequest request,
+            BiConsumer<String, HttpResponse> responseHandler) {
         try {
             HttpPost httpPost = new HttpPost(cdsHooksEndpoint + "/" + service.getId());
             httpPost.setEntity(new StringEntity(new CdsHooksJsonUtil().toJson(request)));
             httpPost.addHeader(HttpHeaders.CONTENT_TYPE, ContentType.APPLICATION_JSON.getMimeType());
             httpPost.addHeader(HttpHeaders.ACCEPT, ContentType.APPLICATION_JSON.getMimeType());
             HttpResponse response = httpClient.execute(httpPost);
-            responseHandler.accept(response);
+            responseHandler.accept(request.getHookInstance(), response);
         } catch (Exception e) {
             log.error(e.getMessage(), e);
         }
