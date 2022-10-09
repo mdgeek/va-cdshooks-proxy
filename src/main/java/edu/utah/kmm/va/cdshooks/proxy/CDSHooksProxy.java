@@ -9,6 +9,7 @@ import org.apache.http.HttpResponse;
 import org.apache.http.client.HttpClient;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
+import org.apache.http.entity.ContentType;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.HttpClients;
 import org.opencds.config.api.model.FhirVersion;
@@ -21,9 +22,7 @@ import org.springframework.beans.factory.annotation.Value;
 import javax.annotation.PostConstruct;
 import javax.servlet.http.HttpServletRequest;
 import javax.ws.rs.*;
-import javax.ws.rs.core.Context;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.Response;
+import javax.ws.rs.core.*;
 import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -55,7 +54,7 @@ public class CDSHooksProxy {
             synchronized (responses) {
                 requestCount--;
 
-                if (response.getStatusLine().getStatusCode() % 100 != 2) {
+                if (response.getStatusLine().getStatusCode() / 100 != 2) {
                     log.error("Service invocation error: " + response.getStatusLine().getStatusCode());
                     return;
                 }
@@ -132,28 +131,28 @@ public class CDSHooksProxy {
 
     @POST
     @Path("/forward")
-    @Consumes(MediaType.TEXT_PLAIN)
-    @SuppressWarnings("unchecked")
-    public Response post(@Context HttpServletRequest request) throws IOException {
-        String body = request.getReader().lines().collect(Collectors.joining("\n"));
-        Map<String, String> data = mapper.readValue(body, Map.class);
-        BatchRequest batch = queueServices(data);
-        return Response.ok(new StringEntity(batch.allComplete() ? "" : batch.id)).build();
+    @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
+    @Produces(MediaType.TEXT_PLAIN)
+    public Response post(MultivaluedMap<String, String> data) throws IOException {
+        log.debug("body: " + String.join("\n", data.keySet()));
+        String batchId = queueServices(data);
+        return Response.ok(batchId).build();
     }
 
     @GET
     @Path("/response/{requestId}")
-    public Response getResponse(@PathParam("requestId") String requestId) throws IOException {
+    @Produces(MediaType.APPLICATION_JSON)
+    public Response getResponse(@PathParam("requestId") String requestId) {
         BatchRequest batchRequest = batchRequestMap.get(requestId);
 
         if (batchRequest == null) {
-            return Response.noContent().build();
+            return Response.status(Response.Status.NOT_FOUND).build();
         } else if (batchRequest.allComplete()) {
             batchRequestMap.remove(requestId);
             return Response.noContent().build();
         } else {
             String response = batchRequest.getNextResponse();
-            return Response.ok(new StringEntity(response == null ? "" : response)).build();
+            return Response.ok(response == null ? "" : response).build();
         }
     }
 
@@ -166,17 +165,17 @@ public class CDSHooksProxy {
             batchRequest.abort();
         }
 
-        return Response.ok(batchRequestMap.remove(requestId)).build();
+        return (batchRequest == null ? Response.notModified() : Response.ok()).build();
     }
 
-    private BatchRequest queueServices(Map<String, String> data) {
+    private String queueServices(MultivaluedMap<String, String> data) {
         BatchRequest batch = newBatchRequest();
-        String hook = data.get("hook");
+        String hook = data.getFirst("hook");
         Validate.notNull(hook, "No hook type specified in request.");
         Map<String, String> context = new HashMap<>();
         copyMap(data, context, "patientId", "userId" );
         getCatalog().getServices("patient-view").forEach(s -> queueService(batch, s, context));
-        return batch;
+        return batch.allComplete() ? null : batch.id;
     }
 
     private BatchRequest newBatchRequest() {
@@ -186,8 +185,8 @@ public class CDSHooksProxy {
             return batchRequest;
         }
     }
-    private void copyMap(Map<String, String> from, Map<String, String> to, String... fields) {
-        Arrays.stream(fields).forEach(field -> to.put(field, from.get(field)));
+    private void copyMap(MultivaluedMap<String, String> from, Map<String, String> to, String... fields) {
+        Arrays.stream(fields).forEach(field -> to.put(field, from.getFirst(field)));
     }
 
     private void queueService(
@@ -238,6 +237,8 @@ public class CDSHooksProxy {
         try {
             HttpPost httpPost = new HttpPost(cdsHooksEndpoint + "/" + service.getId());
             httpPost.setEntity(new StringEntity(new CdsHooksJsonUtil().toJson(request)));
+            httpPost.addHeader(HttpHeaders.CONTENT_TYPE, ContentType.APPLICATION_JSON.getMimeType());
+            httpPost.addHeader(HttpHeaders.ACCEPT, ContentType.APPLICATION_JSON.getMimeType());
             HttpResponse response = httpClient.execute(httpPost);
             responseHandler.accept(response);
         } catch (Exception e) {
