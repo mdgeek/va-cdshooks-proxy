@@ -25,7 +25,6 @@ import javax.ws.rs.core.HttpHeaders;
 import javax.ws.rs.core.MediaType;
 import javax.ws.rs.core.MultivaluedMap;
 import javax.ws.rs.core.Response;
-import java.io.IOException;
 import java.net.MalformedURLException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
@@ -102,7 +101,7 @@ public class CDSHooksProxy {
         private void logError(
                 BatchRequestEntry entry,
                 String message) {
-            log.error(String.format("Error executed CDSHook service %s.  The error was: %s", entry.hookId, message));
+            log.error(String.format("Error executing CDSHook service %s.  The error was: %s", entry.hookId, message));
             entry.state = RequestState.ERROR;
             entries.remove(entry);
         }
@@ -175,8 +174,7 @@ public class CDSHooksProxy {
     @Path("/forward")
     @Consumes(MediaType.APPLICATION_FORM_URLENCODED)
     @Produces(MediaType.TEXT_PLAIN)
-    public Response post(MultivaluedMap<String, String> data) throws IOException {
-        log.debug("body: " + String.join("\n", data.keySet()));
+    public Response post(MultivaluedMap<String, String> data) {
         String batchId = queueServices(data);
         return Response.ok(batchId).build();
     }
