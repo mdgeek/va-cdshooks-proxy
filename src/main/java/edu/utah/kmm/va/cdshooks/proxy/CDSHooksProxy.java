@@ -20,12 +20,10 @@ import org.opencds.hooks.model.request.WritableCdsRequest;
 import org.springframework.beans.factory.annotation.Value;
 
 import javax.annotation.PostConstruct;
+import javax.servlet.ServletContext;
 import javax.servlet.ServletRequest;
 import javax.ws.rs.*;
-import javax.ws.rs.core.HttpHeaders;
-import javax.ws.rs.core.MediaType;
-import javax.ws.rs.core.MultivaluedMap;
-import javax.ws.rs.core.Response;
+import javax.ws.rs.core.*;
 import java.io.InputStream;
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -230,10 +228,10 @@ public class CDSHooksProxy {
     @Path("/static/{resource}")
     @Produces()
     public Response staticResource(
-            ServletRequest request,
+            @Context ServletContext servletContext,
             @PathParam("resource") String resource) {
         try {
-            InputStream is = request.getServletContext().getResourceAsStream(String.format("/WEB-INF/static/%s", resource));
+            InputStream is = servletContext.getResourceAsStream(String.format("/WEB-INF/static/%s", resource));
             log.debug((is == null ? "Didn't find " : "Found ") + resource);
             return is == null
                     ? Response.status(Response.Status.NOT_FOUND).build()
