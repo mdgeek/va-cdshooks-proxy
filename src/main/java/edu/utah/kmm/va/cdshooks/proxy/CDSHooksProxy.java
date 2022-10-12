@@ -9,7 +9,6 @@ import org.apache.http.HttpResponse;
 import org.apache.http.client.HttpClient;
 import org.apache.http.client.methods.HttpGet;
 import org.apache.http.client.methods.HttpPost;
-import org.apache.http.entity.ContentType;
 import org.apache.http.entity.StringEntity;
 import org.apache.http.impl.client.HttpClients;
 import org.opencds.config.api.model.FhirVersion;
@@ -18,10 +17,10 @@ import org.opencds.hooks.model.json.CdsHooksJsonUtil;
 import org.opencds.hooks.model.request.CdsRequest;
 import org.opencds.hooks.model.request.WritableCdsRequest;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 
 import javax.annotation.PostConstruct;
 import javax.servlet.ServletContext;
-import javax.servlet.ServletRequest;
 import javax.ws.rs.*;
 import javax.ws.rs.core.*;
 import java.io.InputStream;
@@ -149,6 +148,8 @@ public class CDSHooksProxy {
 
     private static final Log log = LogFactory.getLog(CDSHooksProxy.class);
 
+    private static final PathMatchingResourcePatternResolver resourceResolver = new PathMatchingResourcePatternResolver();
+
     private final Map<String, BatchRequest> batchRequestMap = new ConcurrentHashMap<>();
 
     private final ObjectMapper mapper = new ObjectMapper();
@@ -225,19 +226,17 @@ public class CDSHooksProxy {
     }
 
     @GET
-    @Path("/static/{resource}")
-    @Produces()
+    @Path("/static/{resource:.*}")
     public Response staticResource(
             @Context ServletContext servletContext,
             @PathParam("resource") String resource) {
         try {
-            InputStream is = servletContext.getResourceAsStream(String.format("/WEB-INF/static/%s", resource));
-            log.debug((is == null ? "Didn't find " : "Found ") + resource);
-            return is == null
-                    ? Response.status(Response.Status.NOT_FOUND).build()
-                    : Response.ok().entity(is).build();
+            InputStream is = servletContext.getResourceAsStream("/WEB-INF/static/" + resource);
+            is = is == null ? resourceResolver.getResource("classpath:static/" + resource).getInputStream() : is;
+            return Response.ok().entity(is).build();
         } catch (Exception e) {
-            return Response.serverError().build();
+            log.error(e.getMessage(), e);
+            return Response.status(Response.Status.NOT_FOUND).build();
         }
     }
 
@@ -317,8 +316,8 @@ public class CDSHooksProxy {
         try {
             HttpPost httpPost = new HttpPost(cdsHooksEndpoint + "/" + service.getId());
             httpPost.setEntity(new StringEntity(new CdsHooksJsonUtil().toJson(request)));
-            httpPost.addHeader(HttpHeaders.CONTENT_TYPE, ContentType.APPLICATION_JSON.getMimeType());
-            httpPost.addHeader(HttpHeaders.ACCEPT, ContentType.APPLICATION_JSON.getMimeType());
+            httpPost.addHeader(HttpHeaders.CONTENT_TYPE, MediaType.APPLICATION_JSON);
+            httpPost.addHeader(HttpHeaders.ACCEPT, MediaType.APPLICATION_JSON);
             HttpResponse response = httpClient.execute(httpPost);
             responseHandler.accept(request.getHookInstance(), response);
         } catch (Exception e) {
