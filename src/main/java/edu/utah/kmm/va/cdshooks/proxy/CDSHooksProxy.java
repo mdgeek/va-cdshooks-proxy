@@ -62,9 +62,13 @@ public class CDSHooksProxy {
 
         private final List<BatchRequestEntry> entries = new ArrayList<>();
 
-        private final String requestId = UUID.randomUUID().toString();
+        private final String requestId;
 
         private boolean aborted;
+
+        BatchRequest(String requestId) {
+            this.requestId = requestId;
+        }
 
         private BatchRequestEntry findEntry(Predicate<BatchRequestEntry> predicate) {
             return entries.stream().filter(predicate).findFirst().orElse(null);
@@ -252,7 +256,7 @@ public class CDSHooksProxy {
     }
 
     private String queueServices(MultivaluedMap<String, String> data) {
-        BatchRequest batch = newBatchRequest();
+        BatchRequest batch = newBatchRequest(data.getFirst("handle"));
         String hook = data.getFirst("hook");
         Validate.notNull(hook, "No hook type specified in request.");
         Map<String, String> context = new HashMap<>();
@@ -261,10 +265,10 @@ public class CDSHooksProxy {
         return batch.allComplete() ? null : batch.requestId;
     }
 
-    private BatchRequest newBatchRequest() {
+    private BatchRequest newBatchRequest(String requestId) {
         synchronized (batchRequestMap) {
-            BatchRequest batchRequest = new BatchRequest();
-            batchRequestMap.put(batchRequest.requestId, batchRequest);
+            BatchRequest batchRequest = new BatchRequest(requestId);
+            batchRequestMap.put(requestId, batchRequest);
             return batchRequest;
         }
     }
