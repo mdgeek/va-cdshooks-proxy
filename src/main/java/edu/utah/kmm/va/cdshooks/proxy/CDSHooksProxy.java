@@ -33,6 +33,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.function.BiConsumer;
 import java.util.function.Predicate;
+import java.util.regex.Pattern;
 
 public class CDSHooksProxy {
 
@@ -150,6 +151,8 @@ public class CDSHooksProxy {
 
     private static final PathMatchingResourcePatternResolver resourceResolver = new PathMatchingResourcePatternResolver();
 
+    private static final Pattern pattern = Pattern.compile("^.*\\.[^\\\\]+$");
+
     private final Map<String, BatchRequest> batchRequestMap = new ConcurrentHashMap<>();
 
     private final ObjectMapper mapper = new ObjectMapper();
@@ -231,9 +234,17 @@ public class CDSHooksProxy {
             @Context ServletContext servletContext,
             @PathParam("resource") String resource) {
         try {
+            String contentType = null;
+
+            if (!pattern.matcher(resource).matches()) {
+                resource += "/index.html";
+            } else if (resource.endsWith(".js")) {
+                contentType = "application/javascript";
+            }
+
             InputStream is = servletContext.getResourceAsStream("/WEB-INF/static/" + resource);
             is = is == null ? resourceResolver.getResource("classpath:static/" + resource).getInputStream() : is;
-            return Response.ok().entity(is).build();
+            return Response.ok().entity(is).header(HttpHeaders.CONTENT_TYPE, contentType).build();
         } catch (Exception e) {
             log.error(e.getMessage(), e);
             return Response.status(Response.Status.NOT_FOUND).build();
