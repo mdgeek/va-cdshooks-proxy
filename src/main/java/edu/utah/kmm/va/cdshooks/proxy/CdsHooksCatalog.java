@@ -7,19 +7,19 @@ import java.util.List;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
-public class CDSHooksCatalog {
+public class CdsHooksCatalog {
 
     @JsonProperty
-    private CDSHooksService[] services;
+    private CdsHooksService[] services;
 
-    public CDSHooksCatalog() {
+    public CdsHooksCatalog() {
     }
 
-    public CDSHooksService getService(String id) {
+    public CdsHooksService getService(String id) {
         return Arrays.stream(services).filter(s -> Objects.equals(id, s.getId())).findFirst().orElse(null);
     }
 
-    public List<CDSHooksService> getServices(String hookType) {
+    public List<CdsHooksService> getServices(String hookType) {
         return Arrays.stream(services).filter(s -> hookType.equals(s.getHook())).collect(Collectors.toList());
     }
 }

@@ -4,7 +4,7 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 
 import java.util.Map;
 
-public class CDSHooksService {
+public class CdsHooksService {
 
     @JsonProperty
     private String hook;
@@ -21,7 +21,7 @@ public class CDSHooksService {
     @JsonProperty
     private Map<String, String> prefetch;
 
-    public CDSHooksService() {
+    public CdsHooksService() {
 
     }
 

@@ -2,7 +2,6 @@ package edu.utah.kmm.va.cdshooks.proxy;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.commons.io.IOUtils;
-import org.apache.commons.lang3.Validate;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.http.HttpResponse;
@@ -24,135 +23,19 @@ import javax.servlet.ServletContext;
 import javax.ws.rs.*;
 import javax.ws.rs.core.*;
 import java.io.InputStream;
-import java.net.MalformedURLException;
 import java.net.URI;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.function.BiConsumer;
-import java.util.function.Predicate;
 import java.util.regex.Pattern;
 
-public class CDSHooksProxy {
+public class CdsHooksProxy {
 
-    private enum RequestState {PENDING, COMPLETED, ERROR, DEQUEUED, HANDLED}
-
-    private static class BatchRequestEntry {
-
-        private final String hookId;
-
-        private final String hookInstance;
-
-        private RequestState state = RequestState.PENDING;
-
-        private String cdsResponse;
-
-        BatchRequestEntry(
-                String hookId,
-                String hookInstance) {
-            this.hookId = hookId;
-            this.hookInstance = hookInstance;
-        }
-
-    }
-
-    private static class BatchRequest {
-
-        private final List<BatchRequestEntry> entries = new ArrayList<>();
-
-        private final String requestId;
-
-        private boolean aborted;
-
-        BatchRequest(String requestId) {
-            this.requestId = requestId;
-        }
-
-        private BatchRequestEntry findEntry(Predicate<BatchRequestEntry> predicate) {
-            return entries.stream().filter(predicate).findFirst().orElse(null);
-        }
-
-        synchronized void onComplete(
-                String hookInstance,
-                HttpResponse response) {
-            if (aborted) {
-                return;
-            }
-
-            BatchRequestEntry entry = findEntry(e -> e.hookInstance.equals(hookInstance));
-
-            if (entry == null) {
-                return;
-            }
-
-            if (response.getStatusLine().getStatusCode() / 100 != 2) {
-                logError(entry, "Http error code " + response.getStatusLine().getStatusCode());
-                return;
-            }
-
-            try {
-                entry.state = RequestState.COMPLETED;
-                entry.cdsResponse = IOUtils.toString(response.getEntity().getContent(), StandardCharsets.UTF_8);
-                log.debug(entry.cdsResponse);
-            } catch (Exception e) {
-                logError(entry, e.getMessage());
-            }
-
-        }
-
-        private void logError(
-                BatchRequestEntry entry,
-                String message) {
-            log.error(String.format("Error executing CDSHook service %s.  The error was: %s", entry.hookId, message));
-            entry.state = RequestState.ERROR;
-            entries.remove(entry);
-        }
-
-        synchronized String getNextHookInstance() {
-            BatchRequestEntry entry = findEntry(r -> r.state == RequestState.COMPLETED);
-
-            if (entry != null) {
-                entry.state = RequestState.DEQUEUED;
-                return entry.hookInstance;
-            }
-
-            return null;
-        }
-
-
-        synchronized String getCdsResponse(String hookInstance) {
-            BatchRequestEntry entry = findEntry(e -> e.hookInstance.equals(hookInstance) && e.state == RequestState.DEQUEUED);
-
-            if (entry != null) {
-                entry.state = RequestState.HANDLED;
-                entries.remove(entry);
-                return entry.cdsResponse;
-            }
-
-            return null;
-        }
-
-        synchronized void addRequest(
-                String hookId,
-                String hookInstance) {
-            entries.add(new BatchRequestEntry(hookId, hookInstance));
-        }
-
-        boolean allComplete() {
-            return entries.isEmpty();
-        }
-
-        void abort() {
-            aborted = true;
-            entries.clear();
-        }
-
-    }
-
-    private static final Log log = LogFactory.getLog(CDSHooksProxy.class);
+    private static final Log log = LogFactory.getLog(CdsHooksProxy.class);
 
     private static final PathMatchingResourcePatternResolver resourceResolver = new PathMatchingResourcePatternResolver();
 
@@ -164,18 +47,13 @@ public class CDSHooksProxy {
 
     private final HttpClient httpClient = HttpClients.createDefault();
 
-    private volatile CDSHooksCatalog cdsHooksCatalog;
+    private volatile CdsHooksCatalog cdsHooksCatalog;
 
     @Value("${maxThreads:10}")
     private int maxThreads;
 
     @Value("${cdsHooksEndpoint}")
     private String cdsHooksEndpoint;
-
-    @Value("${fhirEndpoint}")
-    private String fhirEndpoint;
-
-    private URL fhirEndpointURL;
 
     private ThreadPoolExecutor threadPoolExecutor;
 
@@ -262,58 +140,45 @@ public class CDSHooksProxy {
     }
 
     private String queueServices(MultivaluedMap<String, String> data) {
-        BatchRequest batch = newBatchRequest(data.getFirst("handle"));
-        String hook = data.getFirst("hook");
-        Validate.notNull(hook, "No hook type specified in request.");
-        Map<String, String> context = new HashMap<>();
-        copyMap(data, context, "patientId", "userId");
-        getCatalog().getServices("patient-view").forEach(s -> queueService(batch, s, context));
-        return batch.allComplete() ? null : batch.requestId;
+        BatchRequest batch = newBatchRequest(data);
+        getCatalog().getServices(batch.getHook()).forEach(s -> queueService(batch, s));
+        return batch.allComplete() ? null : batch.getRequestId();
     }
 
-    private BatchRequest newBatchRequest(String requestId) {
+    private BatchRequest newBatchRequest(MultivaluedMap<String, String> data) {
         synchronized (batchRequestMap) {
-            BatchRequest batchRequest = new BatchRequest(requestId);
-            batchRequestMap.put(requestId, batchRequest);
+            BatchRequest batchRequest = new BatchRequest(data);
+            batchRequestMap.put(batchRequest.getRequestId(), batchRequest);
             return batchRequest;
         }
     }
 
-    private void copyMap(
-            MultivaluedMap<String, String> from,
-            Map<String, String> to,
-            String... fields) {
-        Arrays.stream(fields).forEach(field -> to.put(field, from.getFirst(field)));
-    }
-
     private void queueService(
             BatchRequest batch,
-            CDSHooksService service,
-            Map<String, ?> context) {
+            CdsHooksService service) {
         WritableCdsRequest request = new WritableCdsRequest();
         request.setHook(service.getHook());
         WritableHookContext hookContext = new WritableHookContext();
         hookContext.setHook(service.getHook());
-        context.forEach(hookContext::add);
+        batch.getContext().forEach(hookContext::add);
         request.setContext(hookContext);
         request.setHookInstance(UUID.randomUUID().toString());
-        request.setFhirServer(fhirEndpointURL);
+        request.setFhirServer(batch.getFhirEndpoint());
         request.setFhirVersion(FhirVersion.R4);
         batch.addRequest(service.getId(), request.getHookInstance());
         threadPoolExecutor.execute(() -> requestExecution(service, request, batch::onComplete));
     }
 
     @PostConstruct
-    private void initialize() throws MalformedURLException {
-        fhirEndpointURL = new URL(fhirEndpoint);
+    private void initialize() {
         threadPoolExecutor = (ThreadPoolExecutor) Executors.newFixedThreadPool(maxThreads);
     }
 
-    public CDSHooksCatalog getCatalog() {
+    public CdsHooksCatalog getCatalog() {
         return cdsHooksCatalog == null ? loadCatalog() : cdsHooksCatalog;
     }
 
-    private synchronized CDSHooksCatalog loadCatalog() {
+    private synchronized CdsHooksCatalog loadCatalog() {
         if (cdsHooksCatalog == null) {
             try {
                 HttpGet request = new HttpGet(cdsHooksEndpoint);
@@ -321,7 +186,7 @@ public class CDSHooksProxy {
                 HttpResponse response = httpClient.execute(request);
                 String body = IOUtils.toString(response.getEntity().getContent(), StandardCharsets.UTF_8);
                 log.debug(body);
-                cdsHooksCatalog = mapper.readValue(body, CDSHooksCatalog.class);
+                cdsHooksCatalog = mapper.readValue(body, CdsHooksCatalog.class);
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
@@ -331,7 +196,7 @@ public class CDSHooksProxy {
     }
 
     private void requestExecution(
-            CDSHooksService service,
+            CdsHooksService service,
             CdsRequest request,
             BiConsumer<String, HttpResponse> responseHandler) {
         try {
