@@ -25,6 +25,7 @@ import javax.ws.rs.*;
 import javax.ws.rs.core.*;
 import java.io.InputStream;
 import java.net.MalformedURLException;
+import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -236,19 +237,24 @@ public class CDSHooksProxy {
     @Path("/static/{resource:.*}")
     public Response staticResource(
             @Context ServletContext servletContext,
+            @Context UriInfo uriInfo,
             @PathParam("resource") String resource) {
         try {
             String contentType = null;
 
             if (!pattern.matcher(resource).matches()) {
-                resource += "/index.html";
+                URI redirectUri = uriInfo.getRequestUriBuilder().path("index.html").build();
+                return Response.temporaryRedirect(redirectUri).build();
             } else if (resource.endsWith(".js")) {
                 contentType = "application/javascript";
             }
 
             InputStream is = servletContext.getResourceAsStream("/WEB-INF/static/" + resource);
             is = is == null ? resourceResolver.getResource("classpath:static/" + resource).getInputStream() : is;
-            return Response.ok().entity(is).header(HttpHeaders.CONTENT_TYPE, contentType).build();
+            return Response.ok().entity(is)
+                    .header(HttpHeaders.CONTENT_TYPE, contentType)
+                    .header(HttpHeaders.CONTENT_LOCATION, uriInfo.getRequestUri())
+                    .build();
         } catch (Exception e) {
             log.error(e.getMessage(), e);
             return Response.status(Response.Status.NOT_FOUND).build();
