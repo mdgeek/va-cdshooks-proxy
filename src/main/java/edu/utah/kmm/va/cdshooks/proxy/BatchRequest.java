@@ -1,6 +1,5 @@
 package edu.utah.kmm.va.cdshooks.proxy;
 
-import ca.uhn.fhir.util.UrlUtil;
 import org.apache.commons.io.IOUtils;
 import org.apache.commons.lang3.Validate;
 import org.apache.commons.logging.Log;
@@ -9,7 +8,6 @@ import org.apache.http.HttpResponse;
 
 import javax.ws.rs.core.MultivaluedMap;
 import java.net.MalformedURLException;
-import java.net.URI;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
@@ -48,16 +46,19 @@ class BatchRequest {
 
     private final URL fhirEndpoint;
 
-    private final Map<String, String> context = new HashMap<>();
+    private final Map<String, String> parameters = new HashMap<>();
+
+    private final Map<String, String> context;
 
     private boolean aborted;
 
-    BatchRequest(MultivaluedMap<String, String> data) {
-        requestId = data.getFirst("handle");
-        hook = data.getFirst("hook");
-        fhirEndpoint = toURL(data.getFirst("fhir_endpoint"));
+    BatchRequest(MultivaluedMap<String, String> params) {
+        params.keySet().forEach(k -> this.parameters.put(k, params.getFirst(k)));
+        requestId = parameters.get("handle");
+        hook = parameters.get("hook");
+        fhirEndpoint = toURL(parameters.get("fhir_endpoint"));
         Validate.notNull(hook, "No hook type specified in request.");
-        copyMap(data, context, "patientId", "userId");
+        context = createContext("patientId", "userId", "orderId");
     }
 
     private URL toURL(String url) {
@@ -84,11 +85,20 @@ class BatchRequest {
         return Collections.unmodifiableMap(context);
     }
 
-    private void copyMap(
-            MultivaluedMap<String, String> from,
-            Map<String, String> to,
-            String... fields) {
-        Arrays.stream(fields).forEach(field -> to.put(field, from.getFirst(field)));
+    public Map<String, String> getParameters() {
+        return Collections.unmodifiableMap(parameters);
+    }
+
+    private Map<String, String> createContext(String... fields) {
+        Map<String, String> context = new HashMap<>();
+        Arrays.stream(fields).forEach(field -> {
+            String value = parameters.get(field);
+
+            if (value != null) {
+                context.put(field, value);
+            }
+        });
+        return context;
     }
 
     private BatchRequestEntry findEntry(Predicate<BatchRequestEntry> predicate) {
