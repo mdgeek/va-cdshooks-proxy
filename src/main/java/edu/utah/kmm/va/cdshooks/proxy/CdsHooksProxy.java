@@ -68,7 +68,7 @@ public class CdsHooksProxy {
 
     @GET
     @Path("/next/{batchId}")
-    @Produces(MediaType.TEXT_PLAIN)
+    @Produces(MediaType.APPLICATION_JSON)
     public Response getNextHookInstance(@PathParam("batchId") String batchId) {
         BatchRequest batchRequest = batchRequestMap.get(batchId);
 
@@ -78,8 +78,8 @@ public class CdsHooksProxy {
             batchRequestMap.remove(batchId);
             return Response.noContent().build();
         } else {
-            String response = batchRequest.getNextHookInstance();
-            return Response.ok(response == null ? "" : response).build();
+            BatchRequest.InstanceHandle instanceHandle = batchRequest.getNextHookInstance();
+            return Response.ok(instanceHandle == null ? "{}" : instanceHandle.toJSON()).build();
         }
     }
 

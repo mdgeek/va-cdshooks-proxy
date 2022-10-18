@@ -17,21 +17,39 @@ class BatchRequest {
 
     private enum RequestState {PENDING, COMPLETED, ERROR, DEQUEUED, HANDLED}
 
-    private static class BatchRequestEntry {
+    public static class InstanceHandle {
 
-        private final String hookId;
+        public final String hookId;
 
-        private final String hookInstance;
+        public final String hookInstance;
+
+        InstanceHandle(
+                String hookId,
+                String hookInstance) {
+            this.hookId = hookId;
+            this.hookInstance = hookInstance;
+        }
+
+        @Override
+        public String toString() {
+            return hookId + ":" + hookInstance;
+        }
+
+        public String toJSON() {
+            return String.format("{\"hookId\":\"%s\",\"hookInstance\":\"%s\"}", hookId, hookInstance);
+        }
+    }
+
+    public static class BatchRequestEntry {
+
+        public final InstanceHandle instanceHandle;
 
         private RequestState state = RequestState.PENDING;
 
         private String cdsResponse;
 
-        BatchRequestEntry(
-                String hookId,
-                String hookInstance) {
-            this.hookId = hookId;
-            this.hookInstance = hookInstance;
+        BatchRequestEntry(InstanceHandle instanceHandle) {
+            this.instanceHandle = instanceHandle;
         }
 
     }
@@ -112,7 +130,7 @@ class BatchRequest {
             return;
         }
 
-        BatchRequestEntry entry = findEntry(e -> e.hookInstance.equals(hookInstance));
+        BatchRequestEntry entry = findEntry(e -> e.instanceHandle.hookInstance.equals(hookInstance));
 
         if (entry == null) {
             return;
@@ -136,17 +154,17 @@ class BatchRequest {
     private void logError(
             BatchRequestEntry entry,
             String message) {
-        log.error(String.format("Error executing CDSHook service %s.  The error was: %s", entry.hookId, message));
+        log.error(String.format("Error executing CDSHook service %s.  The error was: %s", entry.instanceHandle, message));
         entry.state = RequestState.ERROR;
         entries.remove(entry);
     }
 
-    synchronized String getNextHookInstance() {
+    synchronized InstanceHandle getNextHookInstance() {
         BatchRequestEntry entry = findEntry(r -> r.state == RequestState.COMPLETED);
 
         if (entry != null) {
             entry.state = RequestState.DEQUEUED;
-            return entry.hookInstance;
+            return entry.instanceHandle;
         }
 
         return null;
@@ -154,7 +172,7 @@ class BatchRequest {
 
 
     synchronized String getCdsResponse(String hookInstance) {
-        BatchRequestEntry entry = findEntry(e -> e.hookInstance.equals(hookInstance) && e.state == RequestState.DEQUEUED);
+        BatchRequestEntry entry = findEntry(e -> e.instanceHandle.hookInstance.equals(hookInstance) && e.state == RequestState.DEQUEUED);
 
         if (entry != null) {
             entry.state = RequestState.HANDLED;
@@ -168,7 +186,7 @@ class BatchRequest {
     synchronized void addRequest(
             String hookId,
             String hookInstance) {
-        entries.add(new BatchRequestEntry(hookId, hookInstance));
+        entries.add(new BatchRequestEntry(new InstanceHandle(hookId, hookInstance)));
     }
 
     boolean allComplete() {
