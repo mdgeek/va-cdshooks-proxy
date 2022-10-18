@@ -76,7 +76,7 @@ class BatchRequest {
         hook = parameters.get("hook");
         fhirEndpoint = toURL(parameters.get("fhir_endpoint"));
         Validate.notNull(hook, "No hook type specified in request.");
-        context = createContext("patientId", "userId", "orderId");
+        context = createContext("patientId", "patientName", "userId", "userName", "orderId");
     }
 
     private URL toURL(String url) {
